@@ -8,26 +8,47 @@ import (
 var ErrUnknownFS error = errors.New("unknown file descriptor")
 
 func (f *FileSystem) CreateCmd(pwd int64, path string) error {
-	_, err := f.Create(pwd, path, REGULAR)
+	name, pwd, err := f.ResolveParent(pwd, path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Create(pwd, name, REGULAR)
+	return err
+}
+
+func (f *FileSystem) MkdirCmd(pwd int64, path string) error {
+	name, pwd, err := f.ResolveParent(pwd, path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Create(pwd, name, DIRECTORY)
 	return err
 }
 
 func (f *FileSystem) LinkCmd(pwd int64, from string, to string) error {
-	inode, err := f.Lookup(pwd, from)
+	inode, err := f.ResolvePath(pwd, from)
 	if err != nil {
 		return err
 	}
-	err = f.LinkFile(pwd, to, inode)
+	name, pwd, err := f.ResolveParent(pwd, to)
+	if err != nil {
+		return err
+	}
+	err = f.LinkFile(pwd, name, inode)
 	return err
 }
 
 func (f *FileSystem) UnlinkCmd(pwd int64, name string) error {
-	err := f.UnlinkFile(pwd, name)
+	name, pwd, err := f.ResolveParent(pwd, name)
+	if err != nil {
+		return err
+	}
+	err = f.UnlinkFile(pwd, name)
 	return err
 }
 
 func (f *FileSystem) TruncateCmd(pwd int64, name string, size int64) error {
-	inodeId, err := f.Lookup(pwd, name)
+	inodeId, err := f.ResolvePath(pwd, name)
 	if err != nil {
 		return err
 	}
@@ -40,7 +61,7 @@ func (f *FileSystem) TruncateCmd(pwd int64, name string, size int64) error {
 }
 
 func (f *FileSystem) StatCmd(pwd int64, name string) (Stat, error) {
-	inodeId, err := f.Lookup(pwd, name)
+	inodeId, err := f.ResolvePath(pwd, name)
 	if err != nil {
 		return Stat{}, err
 	}
@@ -49,7 +70,7 @@ func (f *FileSystem) StatCmd(pwd int64, name string) (Stat, error) {
 
 func (f *FileSystem) OpenCmd(pwd int64, name string) (Fkey, error) {
 	// read inode
-	inodeId, err := f.Lookup(pwd, name)
+	inodeId, err := f.ResolvePath(pwd, name)
 	if err != nil {
 		return "", err
 	}
@@ -125,4 +146,39 @@ func (f *FileSystem) CloseCmd(fd Fkey) error {
 	}
 	delete(f.Session.fds, fd)
 	return nil
+}
+
+func (f *FileSystem) CdCmd(pwd int64, path string) error {
+	var err error
+	pwd, err = f.ResolvePath(pwd, path)
+	if err != nil {
+		return err
+	}
+	file, err := f.ReadInode(pwd)
+	if err != nil {
+		return err
+	}
+	if file.fileType != DIRECTORY {
+		return ErrFileIsNotDir
+	}
+	f.Session.pwd = pwd
+	return nil
+}
+
+func (f *FileSystem) RmdirCmd(pwd int64, name string) error {
+	name, pwd, err := f.ResolveParent(pwd, name)
+	if err != nil {
+		return err
+	}
+	err = f.RemoveDir(pwd, name)
+	return err
+}
+
+func (f *FileSystem) SymlinkCmd(pwd int64, from, to string) error {
+	file, dir, err := f.ResolveParent(pwd, to)
+	if err != nil {
+		return err
+	}
+	err = f.SymlinkFile(dir, file, from)
+	return err
 }

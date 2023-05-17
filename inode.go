@@ -12,16 +12,16 @@ type FileType byte
 const (
 	DIRECTORY    FileType = 0
 	REGULAR      FileType = 1
+	SYMLINK      FileType = 2
 	DIRECT_LINKS          = 16
 )
 
 type Inode struct {
-	id            int64
-	fileType      FileType
-	linkCount     int64
-	Size          int64
-	Blocks        [DIRECT_LINKS]int64
-	IndirectBlock int64
+	id        int64
+	fileType  FileType
+	linkCount int64
+	Size      int64
+	Blocks    [DIRECT_LINKS]int64
 }
 
 func (i *Inode) Write(file *os.File) error {
@@ -43,11 +43,6 @@ func (i *Inode) Write(file *os.File) error {
 		if err != nil {
 			return err
 		}
-	}
-
-	err = binary.Write(file, binary.BigEndian, i.IndirectBlock)
-	if err != nil {
-		return err
 	}
 
 	return nil
@@ -72,11 +67,6 @@ func (i *Inode) Read(file *os.File) error {
 		if err != nil {
 			return err
 		}
-	}
-
-	err = binary.Read(file, binary.BigEndian, &i.IndirectBlock)
-	if err != nil {
-		return err
 	}
 
 	return nil
