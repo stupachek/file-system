@@ -1,16 +1,22 @@
 package main
 
-import "errors"
+import (
+	"errors"
+	"path"
+	"strings"
+)
 
 var ErrFileIsNotRegular error = errors.New("file is not regular")
 var ErrDirIsNotEmpty error = errors.New("directory is not empty")
 var ErrDelDot error = errors.New("can't delete \".\" or \"..\"")
+var ErrSym error = errors.New("too many levels of symbolic links")
 
 type Stat struct {
-	inode int64
-	ftype FileType
-	size  int64
-	links int64
+	inode   int64
+	ftype   FileType
+	size    int64
+	links   int64
+	symlink string
 }
 
 func (f *FileSystem) Create(dir int64, name string, ftype FileType) (int64, error) {
@@ -156,22 +162,7 @@ func (f *FileSystem) UnlinkFile(dir int64, name string) error {
 		return err
 	}
 	if file.fileType == DIRECTORY {
-		entry, err := f.List(file.id)
-		if err != nil {
-			return err
-		}
-		if len(entry) != 2 {
-			return ErrDirIsNotEmpty
-		}
-		_, err = f.RemoveFile(&file, ".")
-		if err != nil {
-			return err
-		}
-		_, err = f.RemoveFile(&file, "..")
-		if err != nil {
-			return err
-		}
-
+		return ErrFileIsNotRegular
 	}
 	// remove the file
 	file, err = f.RemoveFile(&directory, name)
@@ -196,10 +187,168 @@ func (f *FileSystem) Stat(file int64) (Stat, error) {
 		return Stat{}, err
 	}
 	// fill struct
+	symlink := ""
+	if inode.fileType == SYMLINK {
+		symlink, err = f.ReadFileStr(inode.id)
+		if err != nil {
+			return Stat{}, err
+		}
+	}
 	return Stat{
-		inode: inode.id,
-		ftype: inode.fileType,
-		size:  inode.Size,
-		links: inode.linkCount,
+		inode:   inode.id,
+		ftype:   inode.fileType,
+		size:    inode.Size,
+		links:   inode.linkCount,
+		symlink: symlink,
 	}, err
+}
+
+func (f *FileSystem) ResolvePathRecursive(pwd int64, path string, depth int) (int64, error) {
+
+	if depth > 10 {
+		return -1, ErrSym
+	}
+	directories := strings.Split(path, "/")
+	cwd := pwd
+	if path == "" {
+		return cwd, nil
+	}
+	if path[0] == '/' {
+		directories = directories[1:]
+		cwd = f.Superblock.Root
+	}
+	if path[len(path)-1] == '/' {
+		directories = directories[:len(directories)-1]
+	}
+	for _, dirName := range directories {
+		dir, err := f.Lookup(cwd, dirName)
+		if err != nil {
+			return -1, err
+		}
+		dir, err = f.ResolveSymlink(cwd, dir, depth)
+		if err != nil {
+			return -1, err
+		}
+		cwd = dir
+	}
+	return cwd, nil
+}
+
+func (f *FileSystem) ResolveSymlink(pwd int64, inode int64, depth int) (int64, error) {
+	file, err := f.ReadInode(inode)
+	if err != nil {
+		return -1, err
+	}
+	if file.fileType != SYMLINK {
+		return inode, nil
+	}
+	path, err := f.ReadFileStr(inode)
+	if err != nil {
+		return -1, err
+	}
+	return f.ResolvePathRecursive(pwd, path, depth+1)
+}
+
+func (f *FileSystem) ResolvePath(pwd int64, path string) (int64, error) {
+	return f.ResolvePathRecursive(pwd, path, 0)
+}
+
+func (f *FileSystem) ResolveParent(pwd int64, fullPath string) (string, int64, error) {
+	dir, file := path.Split(fullPath)
+	inode, err := f.ResolvePath(pwd, dir)
+	return file, inode, err
+}
+
+func (f *FileSystem) RemoveDir(dir int64, name string) error {
+	directory, err := f.ReadInode(dir)
+	if err != nil {
+		return err
+	}
+	if directory.fileType != DIRECTORY {
+		return ErrFileIsNotDir
+	}
+	in, err := f.Lookup(dir, name)
+	if err != nil {
+		return err
+	}
+	file, err := f.ReadInode(in)
+	if err != nil {
+		return err
+	}
+	if file.fileType != DIRECTORY {
+		return ErrFileIsNotDir
+	}
+	entry, err := f.List(file.id)
+	if err != nil {
+		return err
+	}
+	if len(entry) != 2 {
+		return ErrDirIsNotEmpty
+	}
+	_, err = f.RemoveFile(&file, ".")
+	if err != nil {
+		return err
+	}
+	_, err = f.RemoveFile(&file, "..")
+	if err != nil {
+		return err
+	}
+	file, err = f.RemoveFile(&directory, name)
+	if err != nil {
+		return err
+	}
+	// deallocate the inode, it the counter is 0
+	if file.linkCount == 0 {
+		err = f.DeallocateInode(&file)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (f *FileSystem) SymlinkFile(dir int64, name string, symlink string) error {
+	// create file in "dir" in the "name"
+	directory, err := f.ReadInode(dir)
+	if err != nil {
+		return err
+	}
+	if directory.fileType != DIRECTORY {
+		return ErrFileIsNotDir
+	}
+	file, err := f.AllocateInode()
+	if err != nil {
+		return err
+	}
+	// make it symlink
+	file.fileType = SYMLINK
+	err = f.WriteInode(&file)
+	if err != nil {
+		return err
+	}
+	// write the "symlink" to the file
+	_, err = f.Write(&file, 0, []byte(symlink))
+	if err != nil {
+		return err
+	}
+	err = f.AddFile(&directory, name, &file)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *FileSystem) ReadFileStr(inode int64) (string, error) {
+	file, err := f.ReadInode(inode)
+	if err != nil {
+		return "", err
+	}
+	buff := make([]byte, file.Size)
+	_, err = f.Read(&file, 0, buff)
+	if err != nil {
+		return "", err
+	}
+	return string(buff), nil
+
 }

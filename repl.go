@@ -87,19 +87,21 @@ func NewRepl(fs *FileSystem) gorpl.Repl {
 			return nil, err
 		}
 
-		ftype := '-'
+		ftype := "-"
 
 		switch stat.ftype {
 		case DIRECTORY:
-			ftype = 'd'
+			ftype = "d"
 		case REGULAR:
-			ftype = 'r'
+			ftype = "r"
+		case SYMLINK:
+			ftype = fmt.Sprintf("s (%s)", stat.symlink)
 		default:
-			ftype = '-'
+			ftype = "-"
 		}
 
 		fmt.Printf("inode:\t%v\n", stat.inode)
-		fmt.Printf("ftype:\t%c\n", ftype)
+		fmt.Printf("ftype:\t%s\n", ftype)
 		fmt.Printf("size:\t%v\n", stat.size)
 		fmt.Printf("links:\t%v\n", stat.links)
 		return nil, nil
@@ -184,6 +186,39 @@ func NewRepl(fs *FileSystem) gorpl.Repl {
 		fs = &f
 		return nil, err
 	}))
+	mkdir := action.New("mkdir", errorify(func(args ...interface{}) (interface{}, error) {
+		if len(args) != 1 {
+			return nil, errors.New("need name")
+		}
+		name := args[0].(string)
+		err := fs.MkdirCmd(fs.Session.pwd, name)
+		return nil, err
+	}))
+	cd := action.New("cd", errorify(func(args ...interface{}) (interface{}, error) {
+		if len(args) != 1 {
+			return nil, errors.New("need path")
+		}
+		path := args[0].(string)
+		err := fs.CdCmd(fs.Session.pwd, path)
+		return nil, err
+	}))
+	rmdir := action.New("rmdir", errorify(func(args ...interface{}) (interface{}, error) {
+		if len(args) != 1 {
+			return nil, errors.New("need name")
+		}
+		name := args[0].(string)
+		err := fs.RmdirCmd(fs.Session.pwd, name)
+		return nil, err
+	}))
+	symlink := action.New("symlink", errorify(func(args ...interface{}) (interface{}, error) {
+		if len(args) != 2 {
+			return nil, errors.New("need from and to")
+		}
+		from := args[0].(string)
+		to := args[1].(string)
+		err := fs.SymlinkCmd(fs.Session.pwd, from, to)
+		return nil, err
+	}))
 	repl := gorpl.New(";")
 	repl.AddAction(*exitAction)
 	repl.AddAction(*create)
@@ -198,5 +233,9 @@ func NewRepl(fs *FileSystem) gorpl.Repl {
 	repl.AddAction(*seek)
 	repl.AddAction(*close)
 	repl.AddAction(*mkfs)
+	repl.AddAction(*mkdir)
+	repl.AddAction(*cd)
+	repl.AddAction(*rmdir)
+	repl.AddAction(*symlink)
 	return repl
 }
